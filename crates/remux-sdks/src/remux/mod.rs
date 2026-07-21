@@ -568,6 +568,12 @@ pub struct EncodingOptions {
     /// unaffected by this setting.
     #[default(Some(true))]
     pub enable_video_transcoding: Option<bool>,
+    /// Normalise audio loudness to -14 LUFS (EBU R128 streaming standard) via
+    /// the ffmpeg `loudnorm` filter. Applied only when audio is transcoded (not
+    /// copied). Disable for AV receiver setups where the original dynamic range
+    /// and film-reference level are preferred.
+    #[default(Some(true))]
+    pub normalize_audio_loudness: Option<bool>,
     /// Controls how embedded subtitle streams unsupported by the client are handled.
     /// Burn: encode into video (default). Extract: serve via Stream.js/VTT endpoint.
     /// Strip: remove from media source so the client never sees them.

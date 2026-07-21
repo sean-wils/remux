@@ -341,10 +341,44 @@ async fn create_hls_session(
             .probe_data
             .as_ref()
             .and_then(|p| p.audio_stream());
-        let source_audio_codec = source_audio_stream.and_then(|s| {
-            s.codec
-                .clone()
-        });
+        let source_audio_codec = source_audio_stream
+            .as_ref()
+            .and_then(|s| s.codec.clone());
+        let source_audio_profile = source_audio_stream
+            .as_ref()
+            .and_then(|s| s.profile.clone());
+        // Fallback: probe_data cached before the profile fix won't have a Profile
+        // field on the audio stream, but display_title starts with "Main" when the
+        // profile is Main and there is no language prefix (e.g. "Main - Stereo - Default").
+        let source_audio_profile_from_title = source_audio_stream
+            .as_ref()
+            .and_then(|s| s.display_title.as_deref())
+            .filter(|t| t.starts_with("Main"))
+            .map(|_| "Main".to_string());
+        let effective_audio_profile = source_audio_profile
+            .as_deref()
+            .or(source_audio_profile_from_title.as_deref());
+        // AAC Main Profile (audioObjectType=1, mp4a.40.1) is not supported by
+        // Firefox/Chrome MSE — hls.js builds a malformed fMP4 that the decoder
+        // rejects with "could not be decoded". Force re-encode to AAC-LC when
+        // the source is Main Profile so the transmuxed output uses mp4a.40.2.
+        let audio_codec = if audio_codec == "copy"
+            && source_audio_codec
+                .as_deref()
+                .map(|c| c.eq_ignore_ascii_case("aac"))
+                .unwrap_or(false)
+            && effective_audio_profile
+                .map(|p| p.eq_ignore_ascii_case("main"))
+                .unwrap_or(false)
+        {
+            info!(
+                source_audio_profile = effective_audio_profile.unwrap_or(""),
+                "overriding audio_codec copy→aac: AAC Main Profile not supported by MSE"
+            );
+            "aac".to_string()
+        } else {
+            audio_codec
+        };
         let burn_subtitle =
             q.subtitle_method == Some(api::SubtitleDeliveryMethod::Encode);
         let session = TranscodeSession::new(
@@ -480,6 +514,9 @@ async fn create_hls_session(
                 .h265_crf
                 .unwrap_or(28),
             is_live,
+            normalize_audio_loudness: encoding_opts
+                .normalize_audio_loudness
+                .unwrap_or(true),
         };
 
         // Spawn the transcode task with proper error handling
@@ -615,7 +652,17 @@ fn should_serve_ffmpeg_variant_playlist(
     use_fmp4: bool,
     start_time_secs: u32,
 ) -> bool {
-    is_live || use_fmp4
+    // Always use the ffmpeg-written playlist so EXTINF/TARGETDURATION values
+    // reflect actual segment durations. For copy-mode TS, ffmpeg aligns cuts
+    // to keyframe boundaries (e.g. 9.6 s on broadcast content) rather than the
+    // requested hls_time (6 s). Serving a synthetic playlist that claims 6 s
+    // segments violates the HLS spec (TARGETDURATION < actual duration) and
+    // causes hls.js to crash with an internal worker exception.
+    //
+    // The poll-with-timeout in the caller handles the brief window before
+    // ffmpeg writes its first segment.
+    let _ = (is_live, use_fmp4, start_time_secs);
+    true
 }
 
 async fn variant_hls_video_inner(
@@ -751,13 +798,11 @@ mod tests {
     }
 
     #[test]
-    fn resumed_ts_hls_uses_ffmpeg_variant_playlist() {
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 0
-        ));
-        assert!(!super::should_serve_ffmpeg_variant_playlist(
-            false, false, 1
-        ));
+    fn always_serves_ffmpeg_variant_playlist() {
+        // All session types use ffmpeg's real playlist so EXTINF/TARGETDURATION
+        // values are accurate (keyframe-aligned TS segments can exceed hls_time).
+        assert!(super::should_serve_ffmpeg_variant_playlist(false, false, 0));
+        assert!(super::should_serve_ffmpeg_variant_playlist(false, false, 1));
         assert!(super::should_serve_ffmpeg_variant_playlist(false, true, 0));
         assert!(super::should_serve_ffmpeg_variant_playlist(true, false, 0));
     }
@@ -1116,6 +1161,9 @@ async fn hls_segment_inner(
                             .h265_crf
                             .unwrap_or(28),
                         is_live: false,
+                        normalize_audio_loudness: encoding_opts
+                            .normalize_audio_loudness
+                            .unwrap_or(true),
                     };
 
                     // Reinitialise the session's state for the new transcode run.

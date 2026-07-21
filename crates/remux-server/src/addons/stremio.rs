@@ -1317,7 +1317,10 @@ async fn stremio_streams(
         .into_iter()
         .filter(|s| s.is_valid())
         .filter_map(|s| {
-            let descriptor = if s.is_torrent() {
+            // Prefer HTTP URL over torrent when both are present — debrid addons (e.g.
+            // Comet) populate infoHash for metadata but also supply an unrestricted
+            // HTTP URL. Using the URL avoids stalling BitTorrent downloads.
+            let descriptor = if s.is_torrent() && s.url.is_none() && s.external_url.is_none() {
                 crate::stream::StreamDescriptor::Torrent {
                     info_hash: s
                         .info_hash

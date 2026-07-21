@@ -106,6 +106,44 @@ async fn items_playbackinfo_inner(
             .await?
             .context_not_found("not found")?;
 
+    // Detect whether the client is likely to transcode rather than direct-play.
+    // If no DirectPlayProfile lists HEVC/H.265 as a supported video codec, most
+    // 4K content (which is almost always HEVC) will require transcoding. Similarly,
+    // a MaxStreamingBitrate below 40 Mbps means the client can't take a 4K stream
+    // directly. In either case, we prefer ≤1080p source candidates so the probe
+    // and any subsequent transcode operate on a smaller file — faster startup.
+    let client_supports_hevc = device_profile
+        .as_ref()
+        .map(|p| {
+            p.direct_play_profiles
+                .iter()
+                .filter(|dp| {
+                    dp.type_
+                        .as_deref()
+                        .map_or(true, |t| t.eq_ignore_ascii_case("Video"))
+                })
+                .any(|dp| {
+                    dp.video_codec
+                        .as_deref()
+                        .map_or(false, |codecs| {
+                            codecs
+                                .split(',')
+                                .any(|c| {
+                                    let c = c.trim();
+                                    c.eq_ignore_ascii_case("hevc")
+                                        || c.eq_ignore_ascii_case("h265")
+                                })
+                        })
+                })
+        })
+        .unwrap_or(true); // no profile = assume capable (e.g. native clients)
+    let bitrate_cap_below_4k = device_profile
+        .as_ref()
+        .and_then(|p| p.max_streaming_bitrate)
+        .or(q.max_streaming_bitrate)
+        .map_or(false, |mb| mb < 40_000_000);
+    let prefer_lower_res_for_transcode = !client_supports_hevc || bitrate_cap_below_4k;
+
     let mut service = StreamService::new(StreamServiceConfig {
         ctx: state
             .ctx
@@ -121,6 +159,7 @@ async fn items_playbackinfo_inner(
                 p.stream_filter
                     .clone()
             }),
+        prefer_lower_res_for_transcode,
     });
     let is_live = media.is_live();
     let is_track_item = media.is_track();
@@ -279,7 +318,13 @@ async fn items_playbackinfo_inner(
                 })
                 .map(|s| s.index)
                 .collect();
-            if !text_sub_indices.is_empty() {
+            // Skip pre-extraction for remote HTTP(S) sources: running ffmpeg against a
+            // large remote file competes with the main HLS transcode for the same HTTP
+            // connection and reliably times out on 10+ GB remuxes.
+            let is_remote = input_url.starts_with("https://")
+                || (input_url.starts_with("http://")
+                    && !input_url.starts_with("http://127.0.0.1"));
+            if !text_sub_indices.is_empty() && !is_remote {
                 let data_dir = state
                     .ctx
                     .config
@@ -825,6 +870,9 @@ async fn videos_stream_inner(
         h265_crf: encoding_opts
             .h265_crf
             .unwrap_or(28),
+        normalize_audio_loudness: encoding_opts
+            .normalize_audio_loudness
+            .unwrap_or(true),
     };
 
     let stream = crate::playback::engine::start_progressive_transcode(params)?;

@@ -33,6 +33,9 @@ pub(crate) struct StreamServiceConfig {
     pub requested_id: Option<Uuid>,
     pub show_ungrouped: bool,
     pub stream_filter: Option<StreamFilter>,
+    /// When true, prefer lower-resolution sources (≤1080p) over 4K during stream selection.
+    /// Set when the client profile indicates transcoding is likely (e.g. no HEVC direct play).
+    pub prefer_lower_res_for_transcode: bool,
 }
 
 /// Central service for stream selection on a single playback request.
@@ -46,6 +49,7 @@ pub(crate) struct StreamService {
     pub requested_id: Option<Uuid>,
     show_ungrouped: bool,
     stream_filter: Option<StreamFilter>,
+    prefer_lower_res_for_transcode: bool,
     // Populated by resolve()
     group: Option<(Uuid, String, Vec<db::Media>)>,
     stream: Option<db::Media>,
@@ -60,6 +64,7 @@ impl StreamService {
             requested_id: cfg.requested_id,
             show_ungrouped: cfg.show_ungrouped,
             stream_filter: cfg.stream_filter,
+            prefer_lower_res_for_transcode: cfg.prefer_lower_res_for_transcode,
             group: None,
             stream: None,
             streams: vec![],
@@ -360,7 +365,7 @@ impl StreamService {
 
         let probe_pool = all_streams.clone();
 
-        let (candidates, probe_only_first) = if specific_requested {
+        let (mut candidates, probe_only_first) = if specific_requested {
             let sid = requested_id.unwrap();
             (
                 all_streams
@@ -381,6 +386,18 @@ impl StreamService {
             // probe only the first to avoid spawning N FFmpeg processes.
             (all_streams, true)
         };
+
+        // When the client profile indicates transcoding is likely (e.g. no HEVC direct play),
+        // prefer ≤1080p sources so the probe and transcode operate on a smaller file.
+        // Stable sort preserves stream-group ordering within each resolution tier.
+        if self.prefer_lower_res_for_transcode && !specific_requested {
+            candidates.sort_by_key(|m| {
+                m.stream_info
+                    .as_ref()
+                    .and_then(|si| si.resolution_tag())
+                    .map_or(false, |r| r == "4K")
+            });
+        }
 
         StreamSelection {
             candidates,

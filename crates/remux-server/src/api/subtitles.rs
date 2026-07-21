@@ -176,7 +176,7 @@ pub(crate) async fn pre_extract_all_subtitles_to_cache(
     // -y: overwrite without prompting (hangs forever waiting for stdin otherwise)
     // -nostdin: don't read from stdin at all
     // -c:s srt: convert to SRT so the cache is always valid SRT (not raw ASS/VTT bytes)
-    cmd.args(["-y", "-nostdin", "-i", &input_url]);
+    cmd.args(["-y", "-nostdin", "-probesize", "500000", "-analyzeduration", "0", "-i", &input_url]);
     for (idx, path) in &to_extract {
         if let Some(p) = path.to_str() {
             cmd.args([

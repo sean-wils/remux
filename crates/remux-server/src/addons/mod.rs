@@ -2062,7 +2062,7 @@ impl AddonService {
         media: &mut db::Media,
         ctx: &AppContext,
     ) -> Result<()> {
-        const STREAMS_TTL_SECS: i64 = 60;
+        const STREAMS_TTL_SECS: i64 = 300;
         static STREAM_LOCKS: KeyedLock<Uuid> = KeyedLock::new();
 
         // Fast path: TTL not expired — skip the lock entirely.

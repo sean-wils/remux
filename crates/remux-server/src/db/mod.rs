@@ -44,7 +44,8 @@ pub async fn connect(url: &str, slow_query_threshold_ms: u64) -> Result<SqlitePo
             Duration::from_millis(slow_query_threshold_ms),
         );
     Ok(SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(16)
+        .acquire_timeout(Duration::from_secs(30))
         .connect_with(opts)
         .await?)
 }

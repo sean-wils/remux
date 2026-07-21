@@ -308,6 +308,9 @@ pub struct TranscodeParams {
     pub h265_crf: u32,
     /// True for live TV / RTSP streams — disables seeking and enables auto-restart on exit.
     pub is_live: bool,
+    /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
+    /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
+    pub normalize_audio_loudness: bool,
 }
 
 impl Default for TranscodeParams {
@@ -346,6 +349,7 @@ impl Default for TranscodeParams {
             h264_crf: 23,
             h265_crf: 28,
             is_live: false,
+            normalize_audio_loudness: true,
         }
     }
 }
@@ -648,6 +652,25 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         ]);
     }
 
+    // HTTP(S) reliability: reconnect on drops/timeouts, limit initial connect
+    // delay. MediaFusion proxy URLs resolve the RD link before sending data —
+    // without these flags ffmpeg stalls indefinitely on the initial connection.
+    if params.input_url.starts_with("https://")
+        || (params.input_url.starts_with("http://")
+            && !params.input_url.starts_with("http://127.0.0.1"))
+    {
+        args.extend([
+            "-reconnect".into(),
+            "1".into(),
+            "-reconnect_at_eof".into(),
+            "1".into(),
+            "-reconnect_streamed".into(),
+            "1".into(),
+            "-reconnect_delay_max".into(),
+            "5".into(),
+        ]);
+    }
+
     args.extend([
         "-copyts".into(),
         "-i".into(),
@@ -916,6 +939,9 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         args.extend(["-b:a".into(), audio_bitrate.to_string()]);
         if let Some(ch) = params.audio_channels {
             args.extend(["-ac".into(), ch.to_string()]);
+        }
+        if params.normalize_audio_loudness {
+            args.extend(["-af".into(), "loudnorm=I=-14:TP=-1:LRA=11".into()]);
         }
     }
 
@@ -1309,6 +1335,9 @@ pub struct ProgressiveTranscodeParams {
     pub allow_av1_encoding: bool,
     pub h264_crf: u32,
     pub h265_crf: u32,
+    /// Apply `loudnorm=I=-14:TP=-1:LRA=11` when transcoding audio. Has no effect
+    /// when audio_codec is "copy". See EncodingOptions::normalize_audio_loudness.
+    pub normalize_audio_loudness: bool,
 }
 
 /// Build the ffmpeg CLI args for a progressive transcode piped to stdout.
@@ -1664,6 +1693,9 @@ pub(crate) fn build_progressive_args(
         }
         if let Some(ch) = params.audio_channels {
             args.extend(["-ac".into(), ch.to_string()]);
+        }
+        if params.normalize_audio_loudness {
+            args.extend(["-af".into(), "loudnorm=I=-14:TP=-1:LRA=11".into()]);
         }
     }
 
@@ -2197,6 +2229,7 @@ mod tests {
             allow_av1_encoding: false,
             h264_crf: 23,
             h265_crf: 28,
+            normalize_audio_loudness: true,
         }
     }
 
@@ -2480,6 +2513,33 @@ mod tests {
 
         assert_eq!(arg_after(&args, "-b:a"), Some("192000"));
         assert_eq!(arg_after(&args, "-ac"), Some("2"));
+        assert_eq!(arg_after(&args, "-af"), Some("loudnorm=I=-14:TP=-1:LRA=11"));
+    }
+
+    #[test]
+    fn hls_audio_copy_no_loudnorm() {
+        let dir = PathBuf::from("/tmp/test_acopy_norm");
+        let args = build_hls_args(&TranscodeParams {
+            audio_codec: "copy".into(),
+            ..default_hls(dir)
+        });
+        assert!(
+            !args_contains(&args, "-af"),
+            "must not apply loudnorm when copying audio"
+        );
+    }
+
+    #[test]
+    fn hls_audio_loudnorm_disabled() {
+        let dir = PathBuf::from("/tmp/test_loudnorm_off");
+        let args = build_hls_args(&TranscodeParams {
+            normalize_audio_loudness: false,
+            ..default_hls(dir)
+        });
+        assert!(
+            !args_contains(&args, "-af"),
+            "must not apply loudnorm when normalize_audio_loudness is false"
+        );
     }
 
     #[test]

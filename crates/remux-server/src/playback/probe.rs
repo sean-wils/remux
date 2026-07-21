@@ -405,6 +405,10 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
         .args([
             "-v",
             "error",
+            "-probesize",
+            "500000",
+            "-analyzeduration",
+            "0",
             "-print_format",
             "json",
             "-show_chapters",
@@ -668,6 +672,9 @@ pub fn probe_media(url: &str) -> Result<(api::MediaSourceInfo, MediaSegments)> {
                     type_: Some(api::MediaStreamType::Audio),
                     index: s.index,
                     codec: Some(codec.clone()),
+                    profile: s
+                        .profile
+                        .clone(),
                     channels,
                     channel_layout: channel_layout.map(str::to_string),
                     sample_rate,
@@ -896,12 +903,18 @@ fn select_candidates(
                 return false;
             }
             if restrict_resolution {
-                let c_res = c
-                    .stream_info
-                    .as_ref()
-                    .and_then(|si| si.resolution_tag());
-                if c_res != pri_res {
-                    return false;
+                // Only filter by resolution when the primary has a parseable resolution
+                // tag. If pri_res is None (e.g. a debrid-sync sentinel stream that has
+                // no filename/resolution in its name), skip this filter so real streams
+                // aren't incorrectly excluded as fallback candidates.
+                if let Some(ref pri_res_val) = pri_res {
+                    let c_res = c
+                        .stream_info
+                        .as_ref()
+                        .and_then(|si| si.resolution_tag());
+                    if c_res.as_deref() != Some(pri_res_val.as_str()) {
+                        return false;
+                    }
                 }
             }
             true
