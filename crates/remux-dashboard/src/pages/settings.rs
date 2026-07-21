@@ -487,6 +487,7 @@ pub fn PlaybackSettingsCard(app_state: AppState) -> Element {
                 .peek()
                 .parse::<EmbeddedSubtitleHandling>()
                 .ok(),
+            normalize_audio_loudness: None,
         };
         saving.set(true);
         error.set(None);
