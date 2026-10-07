@@ -1023,7 +1023,10 @@ pub(crate) fn build_hls_args(params: &TranscodeParams) -> Vec<String> {
         };
         if let Some(ref filter) = vf {
             args.extend(["-vf".into(), filter.clone()]);
-        } else if let Some(audio_idx) = params.audio_stream_index {
+        }
+        // Independent of the video filter: without an explicit map, ffmpeg
+        // picks its own audio stream and the client's selection is lost.
+        if let Some(audio_idx) = params.audio_stream_index {
             args.extend([
                 "-map".into(),
                 "0:v:0".into(),
@@ -3222,6 +3225,31 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|w| w[0] == "-map" && w[1] == "[v]")
+        );
+    }
+
+    #[test]
+    fn hls_video_filter_keeps_selected_audio_stream() {
+        let args = build_hls_args(&TranscodeParams {
+            video_codec: "libx264".into(),
+            max_width: Some(1280),
+            audio_stream_index: Some(3),
+            ..default_hls(PathBuf::from("/tmp/test_vf_audio"))
+        });
+
+        assert!(
+            arg_after(&args, "-vf").is_some(),
+            "scaling should produce a video filter: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-map" && w[1] == "0:v:0"),
+            "video stream should be mapped: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-map" && w[1] == "0:3"),
+            "selected audio stream should be mapped: {args:?}"
         );
     }
 
